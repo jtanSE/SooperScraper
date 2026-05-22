@@ -52,14 +52,24 @@ def _due_jobs(session: Session, now: datetime, include_failed: bool) -> list[Sch
     return [job for job in jobs if _job_is_due(job, now)]
 
 
+def _runnable_jobs(session: Session, include_failed: bool) -> list[ScheduledJob]:
+    statuses = ["active", "failed"] if include_failed else ["active"]
+    return session.scalars(
+        select(ScheduledJob)
+        .where(ScheduledJob.status.in_(statuses))
+        .order_by(ScheduledJob.id.asc())
+    ).all()
+
+
 def run_due_jobs(
     *,
     session: Session | None = None,
     now: datetime | None = None,
     include_failed: bool = True,
     limit: int | None = None,
+    run_all: bool = False,
 ) -> int:
-    """Run due scheduled jobs once, then advance each job's next_run_at.
+    """Run scheduled jobs once, then advance each job's next_run_at.
 
     This is meant for external schedulers such as GitHub Actions. It does not
     start the FastAPI app or the in-process APScheduler loop.
@@ -71,7 +81,11 @@ def run_due_jobs(
     ran = 0
 
     try:
-        jobs = _due_jobs(session, now, include_failed)
+        jobs = (
+            _runnable_jobs(session, include_failed)
+            if run_all
+            else _due_jobs(session, now, include_failed)
+        )
         if limit is not None:
             jobs = jobs[:limit]
 
@@ -106,10 +120,19 @@ def main(argv: list[str] | None = None) -> int:
         default=None,
         help="Maximum number of due jobs to run in this invocation.",
     )
+    parser.add_argument(
+        "--all",
+        action="store_true",
+        help="Run all active jobs now, even if next_run_at is in the future.",
+    )
     args = parser.parse_args(argv)
 
     logging.basicConfig(level=os.environ.get("SOOPERSCRAPER_LOG_LEVEL", "INFO"))
-    count = run_due_jobs(include_failed=not args.active_only, limit=args.limit)
+    count = run_due_jobs(
+        include_failed=not args.active_only,
+        limit=args.limit,
+        run_all=args.all,
+    )
     log.info("completed cloud runner; ran %s job(s)", count)
     return 0
 

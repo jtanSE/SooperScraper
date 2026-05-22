@@ -88,3 +88,27 @@ def test_run_due_jobs_retries_failed_jobs_by_default(tmp_db, monkeypatch, sessio
     assert runner.run_due_jobs(session=session, now=now) == 1
     session.refresh(job)
     assert job.status == "active"
+
+
+def test_run_due_jobs_all_runs_future_active_job(tmp_db, monkeypatch, session):
+    from app import runner
+    from app.models import ScheduledJob
+
+    now = datetime(2026, 5, 21, 12, 0, tzinfo=timezone.utc)
+    job = ScheduledJob(
+        name="future",
+        urls=["http://example.test/"],
+        extractors=[{"name": "title", "selector": "h1"}],
+        schedule_type="interval",
+        schedule_config={"minutes": 30},
+        status="active",
+        next_run_at=now + timedelta(hours=1),
+    )
+    session.add(job)
+    session.commit()
+
+    monkeypatch.setattr("app.scraper.fetch", lambda url, **kw: "<h1>ok</h1>")
+
+    assert runner.run_due_jobs(session=session, now=now, run_all=True) == 1
+    session.refresh(job)
+    assert job.last_run_at is not None

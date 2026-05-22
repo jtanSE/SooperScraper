@@ -4,6 +4,15 @@ on:
   schedule:
     - cron: "*/30 * * * *"
   workflow_dispatch:
+    inputs:
+      run_all_active:
+        description: "Run all active jobs now, ignoring next_run_at"
+        required: false
+        default: "false"
+        type: choice
+        options:
+          - "false"
+          - "true"
 
 concurrency:
   group: scheduled-scrapes
@@ -30,4 +39,9 @@ jobs:
         run: python -m pip install -e .
 
       - name: Run due scrape jobs
-        run: python -m app.runner
+        run: |
+          if [ "${{ github.event.inputs.run_all_active }}" = "true" ]; then
+            python -m app.runner --all
+          else
+            python -m app.runner
+          fi
