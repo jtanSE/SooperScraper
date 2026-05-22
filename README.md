@@ -43,7 +43,7 @@ How it works:
 
 1. Your local app and GitHub Actions both point at the same database.
 2. You create and edit jobs locally in the UI.
-3. GitHub Actions wakes up every 5 minutes while testing.
+3. GitHub Actions wakes up every 30 minutes at minute `:03` and `:33`.
 4. It runs `python -m app.runner`, which executes due jobs once, stores run
    history, sends Discord notifications, advances `next_run_at`, and exits.
 
@@ -99,7 +99,7 @@ database. Keep the repository private if you store production jobs or webhooks.
 ### 4. Enable the scheduled workflow
 
 Push this repo to GitHub. The workflow at
-`.github/workflows/scheduled-scrapes.yml` runs every 5 minutes while testing and can also be
+`.github/workflows/scheduled-scrapes.yml` runs every 30 minutes at minute `:03` and `:33` and can also be
 started manually from the GitHub Actions tab with "Run workflow".
 
 GitHub scheduled workflows are not exact real-time timers. They are appropriate
