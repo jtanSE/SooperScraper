@@ -91,13 +91,7 @@ def load_recipe(session: Session, recipe: dict[str, Any]) -> ScheduledJob:
     if expanded.get("sort"):
         payload["sort"] = expanded["sort"]
     if expanded.get("notify"):
-        # Recipes can't carry a webhook URL, but JobCreate's notify validator
-        # requires one. Inject a placeholder so validation passes; the loader
-        # only persists it when the recipe explicitly provides one.
-        notify = dict(expanded["notify"])
-        notify.setdefault("discord_webhook_url",
-                          "https://discord.com/api/webhooks/0/placeholder-set-via-ui")
-        payload["notify"] = notify
+        payload["notify"] = expanded["notify"]
 
     parsed = JobCreate.model_validate(payload)
     schedule_type, schedule_config = schedule_to_storage(parsed.schedule)
@@ -107,13 +101,15 @@ def load_recipe(session: Session, recipe: dict[str, Any]) -> ScheduledJob:
     ).first()
 
     notify_config = None
-    if expanded.get("notify"):
-        # Don't store the placeholder webhook — set it via the UI per-host.
-        notify_config = parsed.notify.model_dump() if parsed.notify else None
-        if notify_config and notify_config.get("discord_webhook_url", "").endswith("placeholder-set-via-ui"):
-            notify_config.pop("discord_webhook_url", None)
-        # Preserve any existing webhook URL when updating.
-        if existing and existing.notify_config and existing.notify_config.get("discord_webhook_url"):
+    if parsed.notify is not None:
+        notify_config = parsed.notify.model_dump(exclude_none=True)
+        # Preserve any existing webhook URL when the recipe doesn't carry one.
+        if (
+            existing
+            and existing.notify_config
+            and existing.notify_config.get("discord_webhook_url")
+            and not notify_config.get("discord_webhook_url")
+        ):
             notify_config["discord_webhook_url"] = existing.notify_config["discord_webhook_url"]
 
     if existing is None:

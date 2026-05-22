@@ -215,9 +215,15 @@ class CookiesInput(BaseModel):
 # --- notifications -----------------------------------------------------------
 
 class NotifyConfig(BaseModel):
-    """Per-job notification target. Only Discord webhooks for now."""
+    """Per-job notification target. Only Discord webhooks for now.
 
-    discord_webhook_url: str = Field(min_length=1, max_length=500)
+    `discord_webhook_url` is optional so notification preferences (top-N,
+    preview fields, alerts, etc.) can be configured from a committed recipe
+    file even when the webhook URL itself is set later via the UI on each
+    machine. Notifications are skipped at runtime if the URL is missing.
+    """
+
+    discord_webhook_url: str | None = Field(default=None, max_length=500)
     on_success: bool = True
     on_error: bool = True
     # Show the first N records (already sorted by the job's sort config) in the
@@ -240,7 +246,9 @@ class NotifyConfig(BaseModel):
 
     @field_validator("discord_webhook_url")
     @classmethod
-    def _check_webhook(cls, v: str) -> str:
+    def _check_webhook(cls, v: str | None) -> str | None:
+        if v is None or v == "":
+            return None
         v = _validate_url(v)
         # Discord webhook URLs look like https://discord.com/api/webhooks/<id>/<token>
         if "discord.com/api/webhooks/" not in v and "discordapp.com/api/webhooks/" not in v:

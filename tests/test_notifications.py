@@ -220,6 +220,33 @@ def test_create_job_with_notify(client):
     assert body["notify"]["discord_webhook_url"].startswith("https://discord.com/")
 
 
+def test_notify_config_accepts_missing_webhook_url(tmp_db):
+    """A NotifyConfig with no URL is valid — preferences can be configured
+    without the URL, which gets pasted via the UI per machine."""
+    from app.schemas import NotifyConfig
+    nc = NotifyConfig.model_validate({
+        "on_success": True,
+        "on_error": True,
+        "include_top_n": 5,
+        "preview_fields": ["ticker", "side"],
+    })
+    assert nc.discord_webhook_url is None
+    assert nc.include_top_n == 5
+
+
+def test_notify_run_silent_when_webhook_missing(tmp_db, monkeypatch):
+    """Runtime: notifications are skipped (not raised) when no URL is set."""
+    from app import notifications
+    called = {"count": 0}
+    monkeypatch.setattr(__import__("httpx"), "post", lambda *a, **kw: called.__setitem__("count", called["count"] + 1))
+    sent = notifications.notify_run(
+        {"on_success": True, "on_error": True},  # no discord_webhook_url
+        _FakeJob(), _FakeRun("success"),
+    )
+    assert sent is False
+    assert called["count"] == 0
+
+
 def test_create_job_with_bad_webhook_url(client):
     r = client.post("/api/jobs", json={
         "name": "bad",
