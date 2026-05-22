@@ -35,7 +35,11 @@ def next_run_after(job: ScheduledJob, now: datetime | None = None) -> datetime |
     now = now or _utcnow()
     trigger = trigger_from_schedule(job.schedule_type, job.schedule_config)
     previous_fire_time = _as_aware_utc(job.next_run_at)
-    return trigger.get_next_fire_time(previous_fire_time, now)
+    next_fire_time = trigger.get_next_fire_time(previous_fire_time, now)
+    while next_fire_time is not None and next_fire_time <= now:
+        previous_fire_time = next_fire_time
+        next_fire_time = trigger.get_next_fire_time(previous_fire_time, now)
+    return next_fire_time
 
 
 def _job_is_due(job: ScheduledJob, now: datetime) -> bool:

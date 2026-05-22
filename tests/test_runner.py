@@ -112,3 +112,39 @@ def test_run_due_jobs_all_runs_future_active_job(tmp_db, monkeypatch, session):
     assert runner.run_due_jobs(session=session, now=now, run_all=True) == 1
     session.refresh(job)
     assert job.last_run_at is not None
+
+
+def test_next_run_after_catches_up_stale_interval(tmp_db, session):
+    from app import runner
+    from app.models import ScheduledJob
+
+    now = datetime(2026, 5, 22, 3, 33, tzinfo=timezone.utc)
+    job = ScheduledJob(
+        name="stale",
+        urls=["http://example.test/"],
+        extractors=[{"name": "title", "selector": "h1"}],
+        schedule_type="interval",
+        schedule_config={"minutes": 30, "start_at": "00:03"},
+        status="active",
+        next_run_at=datetime(2026, 5, 22, 1, 47, tzinfo=timezone.utc),
+    )
+
+    assert runner.next_run_after(job, now) == datetime(2026, 5, 22, 3, 47, tzinfo=timezone.utc)
+
+
+def test_next_run_after_catches_up_stale_cron(tmp_db, session):
+    from app import runner
+    from app.models import ScheduledJob
+
+    now = datetime(2026, 5, 22, 3, 34, tzinfo=timezone.utc)
+    job = ScheduledJob(
+        name="stale-cron",
+        urls=["http://example.test/"],
+        extractors=[{"name": "title", "selector": "h1"}],
+        schedule_type="cron",
+        schedule_config={"expression": "3,33 * * * *"},
+        status="active",
+        next_run_at=datetime(2026, 5, 22, 1, 47, tzinfo=timezone.utc),
+    )
+
+    assert runner.next_run_after(job, now) == datetime(2026, 5, 22, 4, 3, tzinfo=timezone.utc)
