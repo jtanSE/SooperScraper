@@ -3,7 +3,7 @@ from __future__ import annotations
 import argparse
 import logging
 import os
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from sqlalchemy import select
 from sqlalchemy import func
@@ -42,19 +42,26 @@ def next_run_after(job: ScheduledJob, now: datetime | None = None) -> datetime |
     return next_fire_time
 
 
-def _job_is_due(job: ScheduledJob, now: datetime) -> bool:
+def _job_is_due(job: ScheduledJob, now: datetime, *, lookahead: timedelta | None = None) -> bool:
     next_run_at = _as_aware_utc(job.next_run_at)
-    return next_run_at is not None and next_run_at <= now
+    cutoff = now + (lookahead or timedelta())
+    return next_run_at is not None and next_run_at <= cutoff
 
 
-def _due_jobs(session: Session, now: datetime, include_failed: bool) -> list[ScheduledJob]:
+def _due_jobs(
+    session: Session,
+    now: datetime,
+    include_failed: bool,
+    *,
+    lookahead: timedelta | None = None,
+) -> list[ScheduledJob]:
     statuses = ["active", "failed"] if include_failed else ["active"]
     jobs = session.scalars(
         select(ScheduledJob)
         .where(ScheduledJob.status.in_(statuses))
         .order_by(ScheduledJob.next_run_at.asc(), ScheduledJob.id.asc())
     ).all()
-    return [job for job in jobs if _job_is_due(job, now)]
+    return [job for job in jobs if _job_is_due(job, now, lookahead=lookahead)]
 
 
 def _runnable_jobs(session: Session, include_failed: bool) -> list[ScheduledJob]:
@@ -100,6 +107,7 @@ def run_due_jobs(
     include_failed: bool = True,
     limit: int | None = None,
     run_all: bool = False,
+    lookahead_seconds: int = 0,
 ) -> int:
     """Run scheduled jobs once, then advance each job's next_run_at.
 
@@ -110,14 +118,16 @@ def run_due_jobs(
     owns_session = session is None
     session = session or SessionLocal()
     now = now or _utcnow()
+    lookahead = timedelta(seconds=max(0, lookahead_seconds))
     ran = 0
 
     try:
+        log.info("runner utc_now=%s due_cutoff=%s", now, now + lookahead)
         log_job_summary(session)
         jobs = (
             _runnable_jobs(session, include_failed)
             if run_all
-            else _due_jobs(session, now, include_failed)
+            else _due_jobs(session, now, include_failed, lookahead=lookahead)
         )
         if limit is not None:
             jobs = jobs[:limit]
@@ -159,6 +169,12 @@ def main(argv: list[str] | None = None) -> int:
         help="Run all active jobs now, even if next_run_at is in the future.",
     )
     parser.add_argument(
+        "--lookahead-seconds",
+        type=int,
+        default=int(os.environ.get("SOOPERSCRAPER_RUNNER_LOOKAHEAD_SECONDS", "0")),
+        help="Also run jobs due within this many seconds; useful for external cron dispatch jitter.",
+    )
+    parser.add_argument(
         "--list",
         action="store_true",
         help="Log a safe summary of jobs visible to this runner, then exit.",
@@ -175,6 +191,7 @@ def main(argv: list[str] | None = None) -> int:
         include_failed=not args.active_only,
         limit=args.limit,
         run_all=args.all,
+        lookahead_seconds=args.lookahead_seconds,
     )
     log.info("completed cloud runner; ran %s job(s)", count)
     return 0

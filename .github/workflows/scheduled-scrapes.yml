@@ -1,8 +1,8 @@
 name: Scheduled scrapes
 
 on:
-  schedule:
-    - cron: "3,33 * * * *"
+  repository_dispatch:
+    types: [scheduled-scrapes]
   workflow_dispatch:
     inputs:
       run_all_active:
@@ -35,6 +35,9 @@ jobs:
       SOOPERSCRAPER_DB_URL: ${{ secrets.SOOPERSCRAPER_DB_URL }}
       SOOPERSCRAPER_SECRET_KEY: ${{ secrets.SOOPERSCRAPER_SECRET_KEY }}
       SOOPERSCRAPER_LOG_LEVEL: INFO
+      SOOPERSCRAPER_RUNNER_LOOKAHEAD_SECONDS: 180
+      RUN_ALL_ACTIVE: ${{ inputs.run_all_active || github.event.client_payload.run_all_active || 'false' }}
+      LIST_JOBS: ${{ inputs.list_jobs || github.event.client_payload.list_jobs || 'false' }}
     steps:
       - uses: actions/checkout@v4
 
@@ -48,9 +51,9 @@ jobs:
 
       - name: Run due scrape jobs
         run: |
-          if [ "${{ github.event.inputs.list_jobs }}" = "true" ]; then
+          if [ "$LIST_JOBS" = "true" ]; then
             python -m app.runner --list
-          elif [ "${{ github.event.inputs.run_all_active }}" = "true" ]; then
+          elif [ "$RUN_ALL_ACTIVE" = "true" ]; then
             python -m app.runner --all
           else
             python -m app.runner
