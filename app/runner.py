@@ -109,6 +109,7 @@ def run_due_jobs(
     ran = 0
 
     try:
+        log_job_summary(session)
         jobs = (
             _runnable_jobs(session, include_failed)
             if run_all
