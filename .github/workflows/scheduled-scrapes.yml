@@ -2,7 +2,7 @@ name: Scheduled scrapes
 
 on:
   schedule:
-    - cron: "*/30 * * * *"
+    - cron: "*/5 * * * *"
   workflow_dispatch:
     inputs:
       run_all_active:
