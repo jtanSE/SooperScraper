@@ -13,6 +13,14 @@ on:
         options:
           - "false"
           - "true"
+      list_jobs:
+        description: "Print safe job summary instead of running scrapes"
+        required: false
+        default: "false"
+        type: choice
+        options:
+          - "false"
+          - "true"
 
 concurrency:
   group: scheduled-scrapes
@@ -40,7 +48,9 @@ jobs:
 
       - name: Run due scrape jobs
         run: |
-          if [ "${{ github.event.inputs.run_all_active }}" = "true" ]; then
+          if [ "${{ github.event.inputs.list_jobs }}" = "true" ]; then
+            python -m app.runner --list
+          elif [ "${{ github.event.inputs.run_all_active }}" = "true" ]; then
             python -m app.runner --all
           else
             python -m app.runner

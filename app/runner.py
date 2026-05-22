@@ -6,6 +6,7 @@ import os
 from datetime import datetime, timezone
 
 from sqlalchemy import select
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from .db import SessionLocal, init_db
@@ -59,6 +60,33 @@ def _runnable_jobs(session: Session, include_failed: bool) -> list[ScheduledJob]
         .where(ScheduledJob.status.in_(statuses))
         .order_by(ScheduledJob.id.asc())
     ).all()
+
+
+def log_job_summary(session: Session) -> None:
+    rows = session.execute(
+        select(ScheduledJob.status, func.count(ScheduledJob.id))
+        .group_by(ScheduledJob.status)
+        .order_by(ScheduledJob.status)
+    ).all()
+    if not rows:
+        log.info("job summary: no jobs found in database")
+        return
+    summary = ", ".join(f"{status}={count}" for status, count in rows)
+    log.info("job summary: %s", summary)
+
+    jobs = session.scalars(
+        select(ScheduledJob).order_by(ScheduledJob.id.asc()).limit(10)
+    ).all()
+    for job in jobs:
+        log.info(
+            "job %s: name=%r status=%s next_run_at=%s notify=%s urls=%s",
+            job.id,
+            job.name,
+            job.status,
+            job.next_run_at,
+            bool(job.notify_config),
+            len(job.urls or []),
+        )
 
 
 def run_due_jobs(
@@ -125,9 +153,19 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="Run all active jobs now, even if next_run_at is in the future.",
     )
+    parser.add_argument(
+        "--list",
+        action="store_true",
+        help="Log a safe summary of jobs visible to this runner, then exit.",
+    )
     args = parser.parse_args(argv)
 
     logging.basicConfig(level=os.environ.get("SOOPERSCRAPER_LOG_LEVEL", "INFO"))
+    if args.list:
+        init_db()
+        with SessionLocal() as session:
+            log_job_summary(session)
+        return 0
     count = run_due_jobs(
         include_failed=not args.active_only,
         limit=args.limit,
