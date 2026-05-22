@@ -5,8 +5,9 @@ import logging
 import os
 from datetime import datetime, timedelta, timezone
 
-from sqlalchemy import select
 from sqlalchemy import func
+from sqlalchemy import select
+from sqlalchemy import update
 from sqlalchemy.orm import Session
 
 from .db import SessionLocal, init_db
@@ -73,6 +74,36 @@ def _runnable_jobs(session: Session, include_failed: bool) -> list[ScheduledJob]
     ).all()
 
 
+def _claim_due_job(
+    session: Session,
+    job: ScheduledJob,
+    now: datetime,
+    include_failed: bool,
+    lookahead: timedelta,
+) -> datetime | None:
+    """Atomically advance a due job before scraping so parallel runners skip it."""
+    statuses = ["active", "failed"] if include_failed else ["active"]
+    cutoff = now + lookahead
+    next_run_at = _as_aware_utc(job.next_run_at)
+    if next_run_at is None or next_run_at > cutoff:
+        return None
+
+    claimed_next_run_at = next_run_after(job, now)
+    result = session.execute(
+        update(ScheduledJob)
+        .where(ScheduledJob.id == job.id)
+        .where(ScheduledJob.status.in_(statuses))
+        .where(ScheduledJob.next_run_at <= cutoff)
+        .values(next_run_at=claimed_next_run_at)
+        .execution_options(synchronize_session=False)
+    )
+    if result.rowcount != 1:
+        session.rollback()
+        return None
+    session.commit()
+    return claimed_next_run_at
+
+
 def log_job_summary(session: Session) -> None:
     rows = session.execute(
         select(ScheduledJob.status, func.count(ScheduledJob.id))
@@ -134,16 +165,31 @@ def run_due_jobs(
 
         for job in jobs:
             job_id = job.id
+            claimed_next_run_at = None
+            if not run_all:
+                claimed_next_run_at = _claim_due_job(
+                    session,
+                    job,
+                    now,
+                    include_failed,
+                    lookahead,
+                )
+                if claimed_next_run_at is None:
+                    log.info("job %s was already claimed or is no longer due", job_id)
+                    continue
+
             log.info("running due job %s (%s)", job.id, job.name)
             run_job(session, job.id)
 
-            refreshed = session.get(ScheduledJob, job_id)
-            if refreshed is None:
-                continue
-            refreshed.next_run_at = next_run_after(refreshed, now)
-            session.commit()
+            if run_all:
+                refreshed = session.get(ScheduledJob, job_id)
+                if refreshed is None:
+                    continue
+                refreshed.next_run_at = next_run_after(refreshed, now)
+                session.commit()
+                claimed_next_run_at = refreshed.next_run_at
             ran += 1
-            log.info("job %s next_run_at=%s", job_id, refreshed.next_run_at)
+            log.info("job %s next_run_at=%s", job_id, claimed_next_run_at)
         return ran
     finally:
         if owns_session:

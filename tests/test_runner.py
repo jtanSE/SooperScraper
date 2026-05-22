@@ -93,6 +93,43 @@ def test_run_due_jobs_uses_lookahead_for_near_future_job(tmp_db, monkeypatch, se
     assert runner._as_aware_utc(job.next_run_at) > now + timedelta(minutes=2)
 
 
+def test_claim_due_job_skips_when_another_runner_advanced_it(tmp_db, session):
+    from app import runner
+    from app.db import SessionLocal
+    from app.models import ScheduledJob
+
+    now = datetime(2026, 5, 21, 12, 0, tzinfo=timezone.utc)
+    job = ScheduledJob(
+        name="claimed",
+        urls=["http://example.test/"],
+        extractors=[{"name": "title", "selector": "h1"}],
+        schedule_type="interval",
+        schedule_config={"minutes": 30},
+        status="active",
+        next_run_at=now - timedelta(minutes=1),
+    )
+    session.add(job)
+    session.commit()
+
+    with SessionLocal() as stale_session, SessionLocal() as fresh_session:
+        stale_job = stale_session.get(ScheduledJob, job.id)
+        fresh_job = fresh_session.get(ScheduledJob, job.id)
+        assert stale_job is not None and fresh_job is not None
+
+        fresh_job.next_run_at = now + timedelta(minutes=30)
+        fresh_session.commit()
+
+        claimed = runner._claim_due_job(
+            stale_session,
+            stale_job,
+            now,
+            include_failed=True,
+            lookahead=timedelta(),
+        )
+
+    assert claimed is None
+
+
 def test_run_due_jobs_skips_beyond_lookahead(tmp_db, monkeypatch, session):
     from app import runner
     from app.models import ScheduledJob
