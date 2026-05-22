@@ -213,6 +213,24 @@ def sort_records(data: dict[str, Any], sort_config: dict[str, Any]) -> dict[str,
 
 def _format_exc(exc: BaseException) -> str:
     # Short, single-line form for the per-URL `error` field; full traceback for logs.
+    if isinstance(exc, httpx.HTTPStatusError):
+        request = exc.request
+        response = exc.response
+        header_bits = []
+        for name in ("retry-after", "x-ratelimit-remaining", "x-ratelimit-reset"):
+            value = response.headers.get(name)
+            if value:
+                header_bits.append(f"{name}: {value}")
+        body = " ".join((response.text or "").split())[:300]
+        detail = (
+            f"HTTPStatusError: {response.status_code} {response.reason_phrase} "
+            f"for {request.method} {request.url}"
+        )
+        if header_bits:
+            detail += f"; headers: {', '.join(header_bits)}"
+        if body:
+            detail += f"; response: {body}"
+        return detail
     return f"{type(exc).__name__}: {exc}"
 
 

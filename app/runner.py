@@ -19,6 +19,13 @@ from .scraper import run_job
 log = logging.getLogger(__name__)
 
 
+def configure_logging(level: str | None = None) -> None:
+    logging.basicConfig(level=level or os.environ.get("SOOPERSCRAPER_LOG_LEVEL", "INFO"))
+    # httpx logs full request URLs at INFO, which can expose webhook tokens.
+    logging.getLogger("httpx").setLevel(logging.WARNING)
+    logging.getLogger("httpcore").setLevel(logging.WARNING)
+
+
 def _utcnow() -> datetime:
     return datetime.now(timezone.utc)
 
@@ -227,7 +234,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     args = parser.parse_args(argv)
 
-    logging.basicConfig(level=os.environ.get("SOOPERSCRAPER_LOG_LEVEL", "INFO"))
+    configure_logging()
     if args.list:
         init_db()
         with SessionLocal() as session:

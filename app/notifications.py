@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 from typing import Any
+from urllib.parse import urlsplit, urlunsplit
 
 import httpx
 
@@ -77,6 +78,38 @@ def _format_record(
     return line[:240]
 
 
+def _display_url(url: Any) -> str:
+    text = str(url or "")
+    try:
+        parts = urlsplit(text)
+    except ValueError:
+        return text[:140]
+    if not parts.scheme or not parts.netloc:
+        return text[:140]
+    safe = urlunsplit((parts.scheme, parts.netloc, parts.path or "/", "", ""))
+    return safe[:140]
+
+
+def _format_error_text(error: Any, *, limit: int = 420) -> str:
+    text = str(error or "Unknown error").strip().replace("```", "'''")
+    text = " ".join(text.split())
+    if len(text) <= limit:
+        return text
+    return text[: limit - 1].rstrip() + "..."
+
+
+def _failed_url_lines(results: list[dict[str, Any]], *, max_lines: int = 3) -> list[str]:
+    failed = [r for r in results if not r.get("ok")]
+    lines: list[str] = []
+    for result in failed[:max_lines]:
+        url = _display_url(result.get("url"))
+        error = _format_error_text(result.get("error"), limit=180)
+        lines.append(f"- `{url}`\n  ```{error}```")
+    if len(failed) > max_lines:
+        lines.append(f"- ...+{len(failed) - max_lines} more failed URL(s)")
+    return lines
+
+
 def _build_payload(job, run, notify_config: dict[str, Any] | None = None) -> dict[str, Any]:
     n_ok = sum(1 for r in run.results if r.get("ok"))
     n_err = sum(1 for r in run.results if not r.get("ok"))
@@ -101,6 +134,13 @@ def _build_payload(job, run, notify_config: dict[str, Any] | None = None) -> dic
         # First line of error, capped so Discord doesn't truncate the whole embed.
         first = run.error.split("\n", 1)[0][:300]
         fields.append({"name": "Error", "value": f"```{first}```", "inline": False})
+    failed_lines = _failed_url_lines(run.results)
+    if failed_lines:
+        fields.append({
+            "name": "Failed URLs",
+            "value": "\n".join(failed_lines),
+            "inline": False,
+        })
 
     # Optional: top-N records + threshold alerts. Only meaningful when the run
     # produced a zip_records-style dict with a `records` list.

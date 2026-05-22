@@ -230,6 +230,25 @@ def test_fetch_raises_on_http_error(tmp_db):
             fetch("http://example.test/", client=client)
 
 
+def test_format_exc_includes_http_status_and_response_body(tmp_db):
+    from app.scraper import _format_exc
+
+    request = httpx.Request("GET", "https://example.test/private")
+    response = httpx.Response(
+        403,
+        text="access denied",
+        headers={"Retry-After": "120"},
+        request=request,
+    )
+    exc = httpx.HTTPStatusError("forbidden", request=request, response=response)
+
+    text = _format_exc(exc)
+    assert "403 Forbidden" in text
+    assert "GET https://example.test/private" in text
+    assert "retry-after: 120" in text
+    assert "access denied" in text
+
+
 def test_run_job_partial(tmp_db, monkeypatch, session):
     """A job with one good URL and one bad URL produces a 'partial' run."""
     from app import scraper

@@ -172,6 +172,23 @@ def test_payload_error_includes_error_block(tmp_db):
     assert "LoginFailed" in error_field["value"]
 
 
+def test_payload_error_includes_failed_url_errors(tmp_db):
+    from app.notifications import _build_payload
+
+    run = _FakeRun("error", results=[{
+        "url": "https://example.com/private?token=secret",
+        "ok": False,
+        "error": "HTTPStatusError: 403 Forbidden for GET https://example.com/private; response: denied",
+    }])
+
+    payload = _build_payload(_FakeJob(), run)
+    failed = next(f for f in payload["embeds"][0]["fields"] if f["name"] == "Failed URLs")
+    assert "https://example.com/private" in failed["value"]
+    assert "token=secret" not in failed["value"]
+    assert "403 Forbidden" in failed["value"]
+    assert "denied" in failed["value"]
+
+
 def test_notify_run_respects_on_success_false(tmp_db, monkeypatch):
     from app import notifications
     called = {"count": 0}

@@ -1,6 +1,19 @@
 from __future__ import annotations
 
+import logging
 from datetime import datetime, timedelta, timezone
+
+
+def test_configure_logging_suppresses_http_client_info(tmp_db):
+    from app import runner
+
+    logging.getLogger("httpx").setLevel(logging.NOTSET)
+    logging.getLogger("httpcore").setLevel(logging.NOTSET)
+
+    runner.configure_logging("INFO")
+
+    assert logging.getLogger("httpx").level == logging.WARNING
+    assert logging.getLogger("httpcore").level == logging.WARNING
 
 
 def test_run_due_jobs_runs_due_active_job(tmp_db, monkeypatch, session):
