@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import json
 import re
 import traceback
 from datetime import datetime, timezone
@@ -211,6 +212,19 @@ def sort_records(data: dict[str, Any], sort_config: dict[str, Any]) -> dict[str,
     return data
 
 
+def _response_snippet(response: httpx.Response, *, limit: int = 300) -> str:
+    text = response.text or ""
+    content_type = response.headers.get("content-type", "").lower()
+    looks_like_html = "html" in content_type or text.lstrip().lower().startswith(("<!doctype", "<html"))
+    if looks_like_html:
+        soup = BeautifulSoup(text, "lxml")
+        for tag in soup(["script", "style", "noscript"]):
+            tag.decompose()
+        text = soup.get_text(" ", strip=True)
+    snippet = " ".join(text.split())
+    return snippet[:limit]
+
+
 def _format_exc(exc: BaseException) -> str:
     # Short, single-line form for the per-URL `error` field; full traceback for logs.
     if isinstance(exc, httpx.HTTPStatusError):
@@ -221,7 +235,7 @@ def _format_exc(exc: BaseException) -> str:
             value = response.headers.get(name)
             if value:
                 header_bits.append(f"{name}: {value}")
-        body = " ".join((response.text or "").split())[:300]
+        body = _response_snippet(response)
         detail = (
             f"HTTPStatusError: {response.status_code} {response.reason_phrase} "
             f"for {request.method} {request.url}"
@@ -247,6 +261,45 @@ def _prune_old_runs(session: Session, job_id: int, keep: int) -> None:
     old_ids = [row[0] for row in session.execute(stmt).all()]
     if old_ids:
         session.execute(delete(JobRun).where(JobRun.id.in_(old_ids)))
+
+
+def _results_for_duplicate_compare(results: list[dict[str, Any]]) -> str:
+    clean: list[dict[str, Any]] = []
+    for result in results:
+        clean.append({
+            k: v for k, v in result.items()
+            if k not in ("duplicate_warning", "duplicate_of_run_id")
+        })
+    return json.dumps(clean, sort_keys=True, separators=(",", ":"), default=str)
+
+
+def _find_duplicate_source_run(session: Session, run: JobRun) -> JobRun | None:
+    if run.status not in ("success", "partial"):
+        return None
+    previous = session.scalars(
+        select(JobRun)
+        .where(JobRun.job_id == run.job_id)
+        .where(JobRun.id != run.id)
+        .where(JobRun.status.in_(("success", "partial")))
+        .order_by(JobRun.started_at.desc(), JobRun.id.desc())
+        .limit(1)
+    ).first()
+    if previous is None:
+        return None
+    if _results_for_duplicate_compare(run.results) != _results_for_duplicate_compare(previous.results):
+        return None
+    return previous
+
+
+def _mark_duplicate_results(results: list[dict[str, Any]], duplicate_of_run_id: int) -> list[dict[str, Any]]:
+    return [
+        {
+            **result,
+            "duplicate_warning": True,
+            "duplicate_of_run_id": duplicate_of_run_id,
+        }
+        for result in results
+    ]
 
 
 def run_job(session: Session, job_id: int) -> JobRun:
@@ -339,6 +392,11 @@ def run_job(session: Session, job_id: int) -> JobRun:
     elif run.status in ("success", "partial") and job.status == "failed":
         # Auto-clear failed once a run succeeds again.
         job.status = "active"
+
+    duplicate_source = _find_duplicate_source_run(session, run)
+    if duplicate_source is not None:
+        run.results = _mark_duplicate_results(results, duplicate_source.id)
+        log.info("job %s results duplicate previous run %s", job.id, duplicate_source.id)
 
     _prune_old_runs(session, job.id, RUN_HISTORY_LIMIT)
     session.commit()

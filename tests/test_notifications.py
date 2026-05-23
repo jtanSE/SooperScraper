@@ -189,6 +189,23 @@ def test_payload_error_includes_failed_url_errors(tmp_db):
     assert "denied" in failed["value"]
 
 
+def test_payload_includes_duplicate_warning(tmp_db):
+    from app.notifications import _build_payload
+
+    run = _FakeRun("success", results=[{
+        "url": "https://x/",
+        "ok": True,
+        "duplicate_warning": True,
+        "duplicate_of_run_id": 41,
+        "data": {"records": [{"ticker": "AAPL"}]},
+    }])
+
+    payload = _build_payload(_FakeJob(), run)
+    warning = next(f for f in payload["embeds"][0]["fields"] if f["name"] == "Duplicate warning")
+    assert "41" in warning["value"]
+    assert "Exclude this run from aggregates" in warning["value"]
+
+
 def test_notify_run_respects_on_success_false(tmp_db, monkeypatch):
     from app import notifications
     called = {"count": 0}

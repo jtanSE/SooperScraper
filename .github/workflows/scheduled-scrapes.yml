@@ -1,4 +1,7 @@
-name: Scheduled scrapes
+name: DAXA scheduled scrapes
+
+# Hosted runner for the DAXA scrape stored in the shared SooperScraper Supabase DB.
+# The Python runner is generic, but this workflow is currently operated for DAXA.
 
 on:
   repository_dispatch:
@@ -35,6 +38,9 @@ jobs:
       SOOPERSCRAPER_DB_URL: ${{ secrets.SOOPERSCRAPER_DB_URL }}
       SOOPERSCRAPER_SECRET_KEY: ${{ secrets.SOOPERSCRAPER_SECRET_KEY }}
       SOOPERSCRAPER_LOG_LEVEL: INFO
+      # DAXA retention window. 200,000 runs is over a year even at a 5-minute cadence.
+      SOOPERSCRAPER_RUN_HISTORY: 200000
+      # DAXA is scheduled on exact minute marks; this handles small external dispatch jitter.
       SOOPERSCRAPER_RUNNER_LOOKAHEAD_SECONDS: 180
       RUN_ALL_ACTIVE: ${{ inputs.run_all_active || github.event.client_payload.run_all_active || 'false' }}
       LIST_JOBS: ${{ inputs.list_jobs || github.event.client_payload.list_jobs || 'false' }}

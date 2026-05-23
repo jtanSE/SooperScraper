@@ -206,6 +206,60 @@ def test_run_job_with_zip_records(tmp_db, monkeypatch, session):
     }
 
 
+def test_run_job_marks_duplicate_results(tmp_db, monkeypatch, session):
+    from app import scraper
+    from app.models import ScheduledJob
+
+    job = ScheduledJob(
+        name="t",
+        urls=["http://good.test/"],
+        extractors=[
+            {"name": "ticker", "selector": "td.t", "attribute": "text", "multiple": True},
+            {"name": "price",  "selector": "td.p", "attribute": "text", "multiple": True},
+        ],
+        schedule_type="hourly",
+        schedule_config={},
+        status="active",
+        zip_records=True,
+    )
+    session.add(job)
+    session.commit()
+
+    html = "<table><tr><td class=t>AAPL</td><td class=p>1</td></tr></table>"
+    monkeypatch.setattr(scraper, "fetch", lambda url, **kw: html)
+
+    first = scraper.run_job(session, job.id)
+    second = scraper.run_job(session, job.id)
+
+    assert "duplicate_warning" not in first.results[0]
+    assert second.results[0]["duplicate_warning"] is True
+    assert second.results[0]["duplicate_of_run_id"] == first.id
+
+
+def test_run_job_does_not_mark_changed_results_as_duplicate(tmp_db, monkeypatch, session):
+    from app import scraper
+    from app.models import ScheduledJob
+
+    job = ScheduledJob(
+        name="t",
+        urls=["http://good.test/"],
+        extractors=[{"name": "price", "selector": "td.p", "attribute": "text"}],
+        schedule_type="hourly",
+        schedule_config={},
+        status="active",
+    )
+    session.add(job)
+    session.commit()
+
+    htmls = iter(["<td class=p>1</td>", "<td class=p>2</td>"])
+    monkeypatch.setattr(scraper, "fetch", lambda url, **kw: next(htmls))
+
+    scraper.run_job(session, job.id)
+    second = scraper.run_job(session, job.id)
+
+    assert "duplicate_warning" not in second.results[0]
+
+
 def test_fetch_uses_client(tmp_db):
     """fetch() with an injected client should use that transport (no network)."""
     from app.scraper import fetch
@@ -247,6 +301,30 @@ def test_format_exc_includes_http_status_and_response_body(tmp_db):
     assert "GET https://example.test/private" in text
     assert "retry-after: 120" in text
     assert "access denied" in text
+
+
+def test_format_exc_extracts_text_from_html_error_body(tmp_db):
+    from app.scraper import _format_exc
+
+    request = httpx.Request("GET", "https://example.test/private")
+    response = httpx.Response(
+        429,
+        text=(
+            '<!DOCTYPE html><html><head><title>Too Many Requests</title>'
+            "<style>.x{}</style></head><body><h1>Rate limit exceeded</h1>"
+            "<p>Please try again later.</p></body></html>"
+        ),
+        headers={"content-type": "text/html"},
+        request=request,
+    )
+    exc = httpx.HTTPStatusError("rate limited", request=request, response=response)
+
+    text = _format_exc(exc)
+    assert "429 Too Many Requests" in text
+    assert "Rate limit exceeded" in text
+    assert "Please try again later" in text
+    assert "<!DOCTYPE" not in text
+    assert "<html" not in text
 
 
 def test_run_job_partial(tmp_db, monkeypatch, session):

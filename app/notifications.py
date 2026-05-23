@@ -113,6 +113,10 @@ def _failed_url_lines(results: list[dict[str, Any]], *, max_lines: int = 3) -> l
 def _build_payload(job, run, notify_config: dict[str, Any] | None = None) -> dict[str, Any]:
     n_ok = sum(1 for r in run.results if r.get("ok"))
     n_err = sum(1 for r in run.results if not r.get("ok"))
+    duplicate_of_run_id = next(
+        (r.get("duplicate_of_run_id") for r in run.results if r.get("duplicate_warning")),
+        None,
+    )
 
     # Find the first successful result to summarize / extract records from.
     first_data: Any = None
@@ -130,6 +134,12 @@ def _build_payload(job, run, notify_config: dict[str, Any] | None = None) -> dic
     ]
     if data_summary:
         fields.append({"name": "Result", "value": data_summary, "inline": False})
+    if duplicate_of_run_id is not None:
+        fields.append({
+            "name": "Duplicate warning",
+            "value": f"Same extracted data as run `{duplicate_of_run_id}`. Exclude this run from aggregates.",
+            "inline": False,
+        })
     if run.error:
         # First line of error, capped so Discord doesn't truncate the whole embed.
         first = run.error.split("\n", 1)[0][:300]
