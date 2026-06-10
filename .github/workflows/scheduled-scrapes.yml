@@ -40,6 +40,9 @@ jobs:
       SOOPERSCRAPER_LOG_LEVEL: INFO
       # DAXA retention window. 200,000 runs is over a year even at a 5-minute cadence.
       SOOPERSCRAPER_RUN_HISTORY: 200000
+      # Back off hard when WordPress/MyDAXA returns 429 so the runner does not
+      # keep hitting the site every cadence and extend the rate limit.
+      SOOPERSCRAPER_RATE_LIMIT_COOLDOWN_MINUTES: 180
       # DAXA is scheduled on exact minute marks; this handles small external dispatch jitter.
       SOOPERSCRAPER_RUNNER_LOOKAHEAD_SECONDS: 180
       RUN_ALL_ACTIVE: ${{ inputs.run_all_active || github.event.client_payload.run_all_active || 'false' }}

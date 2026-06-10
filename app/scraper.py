@@ -4,7 +4,7 @@ import logging
 import json
 import re
 import traceback
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 import httpx
@@ -13,7 +13,7 @@ from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
 
 from . import crypto, notifications
-from .config import HTTP_TIMEOUT, RUN_HISTORY_LIMIT, USER_AGENT
+from .config import HTTP_TIMEOUT, RATE_LIMIT_COOLDOWN_MINUTES, RUN_HISTORY_LIMIT, USER_AGENT
 from .models import JobRun, ScheduledJob
 
 
@@ -248,6 +248,12 @@ def _format_exc(exc: BaseException) -> str:
     return f"{type(exc).__name__}: {exc}"
 
 
+def _http_status_code(exc: BaseException) -> int | None:
+    if isinstance(exc, httpx.HTTPStatusError):
+        return exc.response.status_code
+    return None
+
+
 def _prune_old_runs(session: Session, job_id: int, keep: int) -> None:
     if keep <= 0:
         return
@@ -319,6 +325,7 @@ def run_job(session: Session, job_id: int) -> JobRun:
     results: list[dict[str, Any]] = []
     ok_count = 0
     err_count = 0
+    rate_limited = False
     job_level_error: str | None = None
     authed_client: httpx.Client | None = None
 
@@ -354,7 +361,13 @@ def run_job(session: Session, job_id: int) -> JobRun:
                 ok_count += 1
             except Exception as exc:
                 log.warning("scrape failed for %s: %s", url, exc, exc_info=True)
-                results.append({"url": url, "ok": False, "error": _format_exc(exc)})
+                status_code = _http_status_code(exc)
+                if status_code == 429:
+                    rate_limited = True
+                result = {"url": url, "ok": False, "error": _format_exc(exc)}
+                if status_code is not None:
+                    result["http_status"] = status_code
+                results.append(result)
                 err_count += 1
     except Exception as exc:
         # Login or other pre-loop failure: mark every URL as errored so the user
@@ -392,6 +405,19 @@ def run_job(session: Session, job_id: int) -> JobRun:
     elif run.status in ("success", "partial") and job.status == "failed":
         # Auto-clear failed once a run succeeds again.
         job.status = "active"
+
+    if (
+        rate_limited
+        and ok_count == 0
+        and RATE_LIMIT_COOLDOWN_MINUTES > 0
+        and job.next_run_at is not None
+    ):
+        job.next_run_at = finished + timedelta(minutes=RATE_LIMIT_COOLDOWN_MINUTES)
+        log.info(
+            "job %s hit HTTP 429; delaying next run until %s",
+            job.id,
+            job.next_run_at,
+        )
 
     duplicate_source = _find_duplicate_source_run(session, run)
     if duplicate_source is not None:

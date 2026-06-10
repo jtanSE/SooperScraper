@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import httpx
 import pytest
@@ -386,6 +386,49 @@ def test_run_job_all_failed_marks_job_failed(tmp_db, monkeypatch, session):
     assert run.status == "error"
     session.refresh(job)
     assert job.status == "failed"
+
+
+def test_run_job_429_delays_next_run(tmp_db, monkeypatch, session):
+    from app import scraper
+    from app.models import ScheduledJob
+
+    now = datetime.now(timezone.utc)
+    job = ScheduledJob(
+        name="rate-limited",
+        urls=["https://example.test/private"],
+        extractors=[{"name": "x", "selector": "h1"}],
+        schedule_type="hourly",
+        schedule_config={},
+        status="active",
+        next_run_at=now + timedelta(minutes=30),
+    )
+    session.add(job)
+    session.commit()
+
+    def fake_fetch(url, **kw):
+        request = httpx.Request("GET", url)
+        response = httpx.Response(
+            429,
+            text="<html><body>Too many requests</body></html>",
+            request=request,
+        )
+        raise httpx.HTTPStatusError("rate limited", request=request, response=response)
+
+    monkeypatch.setattr(scraper, "fetch", fake_fetch)
+    run = scraper.run_job(session, job.id)
+
+    session.refresh(job)
+    assert run.status == "error"
+    assert run.results[0]["http_status"] == 429
+    assert job.status == "failed"
+    assert job.next_run_at is not None
+    next_run_at = job.next_run_at
+    finished_at = run.finished_at
+    if next_run_at.tzinfo is None:
+        next_run_at = next_run_at.replace(tzinfo=timezone.utc)
+    if finished_at.tzinfo is None:
+        finished_at = finished_at.replace(tzinfo=timezone.utc)
+    assert next_run_at >= finished_at + timedelta(minutes=59)
 
 
 def test_run_job_clears_failed_after_success(tmp_db, monkeypatch, session):
