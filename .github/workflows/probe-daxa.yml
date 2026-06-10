@@ -1,0 +1,24 @@
+name: Probe DAXA request
+
+on:
+  workflow_dispatch:
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      DAXA_COOKIE_RAW: ${{ secrets.DAXA_COOKIE_RAW }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install dependencies
+        run: python -m pip install -e .
+
+      - name: Probe DAXA URL
+        run: python -m app.probe_url
