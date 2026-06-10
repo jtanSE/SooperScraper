@@ -4,6 +4,7 @@ import argparse
 import logging
 import os
 from datetime import datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
 
 from sqlalchemy import func
 from sqlalchemy import select
@@ -17,6 +18,53 @@ from .scraper import run_job
 
 
 log = logging.getLogger(__name__)
+
+
+def _parse_hhmm(value: str) -> tuple[int, int]:
+    hour_s, minute_s = value.split(":", 1)
+    hour = int(hour_s)
+    minute = int(minute_s)
+    if not (0 <= hour <= 23 and 0 <= minute <= 59):
+        raise ValueError
+    return hour, minute
+
+
+def _active_window(
+    spec: str | None,
+    now: datetime,
+) -> tuple[str, datetime] | None:
+    """Return (window_spec, end_utc) when now is inside any configured window.
+
+    Window format: "America/New_York:16:00-18:00". Multiple windows can be
+    separated by commas. Windows that cross midnight are supported.
+    """
+    if not spec:
+        return None
+    now_utc = _as_aware_utc(now)
+    if now_utc is None:
+        return None
+    for raw_window in [part.strip() for part in spec.split(",") if part.strip()]:
+        try:
+            tz_name, time_range = raw_window.split(":", 1)
+            start_s, end_s = time_range.split("-", 1)
+            start_hour, start_minute = _parse_hhmm(start_s)
+            end_hour, end_minute = _parse_hhmm(end_s)
+            tz = ZoneInfo(tz_name)
+        except Exception:
+            log.warning("ignoring invalid runner time window %r", raw_window)
+            continue
+
+        local_now = now_utc.astimezone(tz)
+        start = local_now.replace(hour=start_hour, minute=start_minute, second=0, microsecond=0)
+        end = local_now.replace(hour=end_hour, minute=end_minute, second=0, microsecond=0)
+        if end <= start:
+            if local_now >= start:
+                end += timedelta(days=1)
+            else:
+                start -= timedelta(days=1)
+        if start <= local_now < end:
+            return raw_window, end.astimezone(timezone.utc)
+    return None
 
 
 def configure_logging(level: str | None = None) -> None:
@@ -87,20 +135,38 @@ def _claim_due_job(
     now: datetime,
     include_failed: bool,
     lookahead: timedelta,
+    *,
+    force: bool = False,
+    force_min_interval: timedelta | None = None,
 ) -> datetime | None:
     """Atomically advance a due job before scraping so parallel runners skip it."""
     statuses = ["active", "failed"] if include_failed else ["active"]
     cutoff = now + lookahead
     next_run_at = _as_aware_utc(job.next_run_at)
-    if next_run_at is None or next_run_at > cutoff:
+    force_min_interval = force_min_interval or timedelta(minutes=20)
+    last_run_at = _as_aware_utc(job.last_run_at)
+    if force and last_run_at is not None and last_run_at > now - force_min_interval:
+        return None
+    if not force and (next_run_at is None or next_run_at > cutoff):
         return None
 
-    claimed_next_run_at = next_run_after(job, now)
+    if force:
+        claimed_next_run_at = now + force_min_interval
+        stale_after = now + force_min_interval
+        claim_filter = (
+            (ScheduledJob.next_run_at == None)  # noqa: E711
+            | (ScheduledJob.next_run_at <= cutoff)
+            | (ScheduledJob.next_run_at > stale_after)
+        )
+    else:
+        claimed_next_run_at = next_run_after(job, now)
+        claim_filter = ScheduledJob.next_run_at <= cutoff
+
     result = session.execute(
         update(ScheduledJob)
         .where(ScheduledJob.id == job.id)
         .where(ScheduledJob.status.in_(statuses))
-        .where(ScheduledJob.next_run_at <= cutoff)
+        .where(claim_filter)
         .values(next_run_at=claimed_next_run_at)
         .execution_options(synchronize_session=False)
     )
@@ -157,14 +223,24 @@ def run_due_jobs(
     session = session or SessionLocal()
     now = now or _utcnow()
     lookahead = timedelta(seconds=max(0, lookahead_seconds))
+    blackout = _active_window(os.environ.get("SOOPERSCRAPER_RUNNER_BLACKOUT_WINDOWS"), now)
+    force_window = _active_window(os.environ.get("SOOPERSCRAPER_RUNNER_FORCE_WINDOWS"), now)
+    force_min_interval = timedelta(
+        seconds=max(1, int(os.environ.get("SOOPERSCRAPER_RUNNER_FORCE_MIN_INTERVAL_SECONDS", "1200")))
+    )
     ran = 0
 
     try:
         log.info("runner utc_now=%s due_cutoff=%s", now, now + lookahead)
+        if blackout is not None and not run_all:
+            log.info("runner blackout window active (%s); skipping due jobs", blackout[0])
+            return 0
+        if force_window is not None and not run_all:
+            log.info("runner force window active (%s); stale/cooldown jobs may run", force_window[0])
         log_job_summary(session)
         jobs = (
             _runnable_jobs(session, include_failed)
-            if run_all
+            if run_all or force_window is not None
             else _due_jobs(session, now, include_failed, lookahead=lookahead)
         )
         if limit is not None:
@@ -180,6 +256,8 @@ def run_due_jobs(
                     now,
                     include_failed,
                     lookahead,
+                    force=force_window is not None,
+                    force_min_interval=force_min_interval,
                 )
                 if claimed_next_run_at is None:
                     log.info("job %s was already claimed or is no longer due", job_id)
@@ -187,6 +265,15 @@ def run_due_jobs(
 
             log.info("running due job %s (%s)", job.id, job.name)
             run_job(session, job.id)
+
+            if force_window is not None and not run_all:
+                refreshed = session.get(ScheduledJob, job_id)
+                if refreshed is not None:
+                    normal_next_run_at = next_run_after(refreshed, now)
+                    if normal_next_run_at is not None and normal_next_run_at < force_window[1]:
+                        refreshed.next_run_at = normal_next_run_at
+                        session.commit()
+                        claimed_next_run_at = normal_next_run_at
 
             if run_all:
                 refreshed = session.get(ScheduledJob, job_id)

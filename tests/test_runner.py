@@ -79,6 +79,66 @@ def test_run_due_jobs_skips_paused_and_future_jobs(tmp_db, monkeypatch, session)
     assert called is False
 
 
+def test_run_due_jobs_skips_blackout_window(tmp_db, monkeypatch, session):
+    from app import runner
+    from app.models import ScheduledJob
+
+    monkeypatch.setenv("SOOPERSCRAPER_RUNNER_BLACKOUT_WINDOWS", "America/New_York:01:00-03:00")
+    now = datetime(2026, 6, 10, 5, 33, tzinfo=timezone.utc)
+    job = ScheduledJob(
+        name="due-blackout",
+        urls=["http://example.test/"],
+        extractors=[{"name": "title", "selector": "h1"}],
+        schedule_type="cron",
+        schedule_config={"expression": "3,33 * * * *"},
+        status="active",
+        next_run_at=now - timedelta(minutes=1),
+    )
+    session.add(job)
+    session.commit()
+
+    called = False
+
+    def fake_fetch(url, **kw):
+        nonlocal called
+        called = True
+        return "<h1>ok</h1>"
+
+    monkeypatch.setattr("app.scraper.fetch", fake_fetch)
+
+    assert runner.run_due_jobs(session=session, now=now, lookahead_seconds=180) == 0
+    assert called is False
+    session.refresh(job)
+    assert job.last_run_at is None
+
+
+def test_run_due_jobs_force_window_runs_future_job(tmp_db, monkeypatch, session):
+    from app import runner
+    from app.models import ScheduledJob
+
+    monkeypatch.setenv("SOOPERSCRAPER_RUNNER_FORCE_WINDOWS", "America/New_York:16:00-18:00")
+    monkeypatch.setenv("SOOPERSCRAPER_RUNNER_FORCE_MIN_INTERVAL_SECONDS", "1200")
+    now = datetime(2026, 6, 10, 20, 3, 18, tzinfo=timezone.utc)
+    job = ScheduledJob(
+        name="cooldown-in-force-window",
+        urls=["http://example.test/"],
+        extractors=[{"name": "title", "selector": "h1"}],
+        schedule_type="cron",
+        schedule_config={"expression": "3,33 * * * *"},
+        status="active",
+        next_run_at=now + timedelta(hours=3),
+    )
+    session.add(job)
+    session.commit()
+
+    monkeypatch.setattr("app.scraper.fetch", lambda url, **kw: "<h1>ok</h1>")
+
+    assert runner.run_due_jobs(session=session, now=now, lookahead_seconds=180) == 1
+    session.refresh(job)
+    assert job.last_run_at is not None
+    assert runner._as_aware_utc(job.next_run_at) == datetime(2026, 6, 10, 20, 33, tzinfo=timezone.utc)
+
+
 def test_run_due_jobs_uses_lookahead_for_near_future_job(tmp_db, monkeypatch, session):
     from app import runner
     from app.models import ScheduledJob

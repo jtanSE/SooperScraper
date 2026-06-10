@@ -43,6 +43,10 @@ jobs:
       # Back off hard when WordPress/MyDAXA returns 429 so the runner does not
       # keep hitting the site every cadence and extend the rate limit.
       SOOPERSCRAPER_RATE_LIMIT_COOLDOWN_MINUTES: 180
+      # Reduce off-hours pressure, but keep the after-market DAXA window active.
+      SOOPERSCRAPER_RUNNER_BLACKOUT_WINDOWS: America/New_York:01:00-03:00
+      SOOPERSCRAPER_RUNNER_FORCE_WINDOWS: America/New_York:16:00-18:00
+      SOOPERSCRAPER_RUNNER_FORCE_MIN_INTERVAL_SECONDS: 1200
       # DAXA is scheduled on exact minute marks; this handles small external dispatch jitter.
       SOOPERSCRAPER_RUNNER_LOOKAHEAD_SECONDS: 180
       RUN_ALL_ACTIVE: ${{ inputs.run_all_active || github.event.client_payload.run_all_active || 'false' }}
